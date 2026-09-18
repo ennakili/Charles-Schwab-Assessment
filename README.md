@@ -1,0 +1,97 @@
+# Governed URL Shortener
+
+A runnable .NET 10 Web API prototype that shortens URLs, records click analytics, and exposes a governed agentic SDLC workflow. The application is organized around the workflow graph and its durable execution state; URL persistence and caching are implementation details behind the workflow service. SQLite uses the host system library rather than a bundled native binary.
+
+## Run
+
+```bash
+dotnet run
+```
+
+The development OpenAPI document is available at `/openapi/v1.json`. The default launch profile also enables HTTPS.
+
+## API
+
+Create a short URL:
+
+```http
+POST /api/short-urls
+Content-Type: application/json
+
+{"destination":"https://example.com/article","expiresAt":"2027-01-01T00:00:00Z"}
+```
+
+Resolve it with `GET /r/{code}`. Each successful resolution increments the counter and records referer, user agent, IP address, and timestamp. Read metrics with `GET /api/short-urls/{code}/analytics`.
+
+Run the governed workflow:
+
+```http
+POST /api/workflows/execute
+Content-Type: application/json
+
+{"requirement":"Add URL analytics","scenario":"greenfield"}
+```
+
+Supply `workflowId` to resume an existing workflow from its SQLite checkpoints. PR review and merge policy remain outside this runtime API. Audit events are available at `GET /api/workflows/audit`.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  HTTP[HTTP API] --> GRAPH[Explicit workflow graph]
+  GRAPH --> READY[Ready-node scheduler]
+  READY --> ENTRY[Entry gates]
+  ENTRY --> WORK[Stage execution]
+  WORK --> EXIT[Exit gates]
+  EXIT --> STATE[SQLite checkpoints and audit]
+  STATE --> CACHE[HybridCache for URL reads]
+```
+
+The orchestration graph is stateful and dependency-driven:
+
+`requirements -> architecture -> implementation -> tests -> release-readiness`
+
+The graph is explicitly declared as:
+
+`requirements -> architecture -> implementation -> tests -> release-readiness`
+
+with a parallel-ready documentation branch:
+
+`requirements + architecture -> documentation -> release-readiness`
+
+The scheduler computes ready nodes from completed dependencies rather than relying on declaration order. Every ready wave runs as isolated concurrent workers; shared SQLite checkpoint and audit writes are serialized by the coordinator. Every node has an entry gate, a pluggable `IWorkflowStageHandler`, structured JSON artifact, validation result, and exit gate. The implementation handler applies its generated change-set manifest atomically under `Workflow:SourceRoot` and records the applied path. The tests node executes `dotnet test` and records the command, exit code, duration, output, and pass/fail result. Release readiness hashes every artifact and persists an evidence bundle that can be reviewed independently. Agent/tool-backed handlers can replace the built-in handlers for individual stages without changing graph scheduling or artifact contracts. A failed gate stops the workflow safely; a transient test failure retries once, and a failed node records rollback status. Workflow records, stage checkpoints, and artifacts are persisted in SQLite, allowing execution to resume after a process restart. A requirement containing `change` triggers downstream re-planning; a requirement containing `flaky` exercises one bounded retry. PR review and merge policy are external change-control concerns.
+
+## Required scenarios
+
+### Greenfield
+
+Requirement: `Create a URL shortener with click analytics.` The requirements node normalizes the intent, architecture records design decisions, implementation executes the work item, tests validate behavior, and the release gate requires tests plus documentation. Assumption: SQLite is sufficient for a single-node reviewable prototype. Limitation: production scale requires a server-grade relational deployment strategy.
+
+### Brownfield
+
+Requirement: `Change analytics to support a new reporting consumer.` The same graph begins at requirements, records the changed decision, invalidates dependent downstream outputs, and re-plans architecture, implementation, tests, and documentation. The release gate prevents unreviewed change from shipping. Assumption: the consumer contract is still compatible with the existing analytics response.
+
+### Ambiguous
+
+Requirement: `Make links fast and reliable.` The requirements stage preserves the ambiguity as a risk rather than inventing a business SLA. Architecture records the missing durability and scale decisions, and the release gate remains blocked until acceptance criteria are clarified. Limitation: the prototype cannot infer retention, traffic, availability, or abuse requirements.
+
+## Reliability and safety controls
+
+- Domain validation accepts only absolute HTTP(S) destinations and rejects expired links.
+- The workflow uses bounded retries, explicit rollback outcomes, cancellation, durable checkpoints, and safe-stop on failed gates.
+- Audit events include workflow, stage, action, outcome, detail, and correlation ID.
+- Metrics expose success rate, retry count, rollback count, end-to-end latency, and recovery latency.
+- No arbitrary code execution, secrets, network fetching, or destructive deployment action is performed by the prototype.
+- Production hardening still requires durable storage, unique constraints, rate limiting, abuse scanning, authentication for workflow control, structured telemetry, and distributed locking.
+
+## Testing
+
+```bash
+dotnet test Tests/UrlShortener.Tests/UrlShortener.Tests.csproj
+```
+
+The tests target application behavior rather than controller implementation: URL validation, expiry, click analytics, durable checkpoints, bounded retry, re-planning, and audit traceability. HTTP contract tests should be added before production release.
+
+## Trade-offs and limitations
+
+SQLite keeps setup friction low while providing durable local persistence. The application uses `SQLitePCLRaw.provider.sqlite3` with the host system library, avoiding a bundled native SQLite dependency. HybridCache reduces repeated mapping reads but requires a distributed cache configuration for multi-instance deployments. Short-code generation is deterministic per process and is not a distributed uniqueness strategy. The workflow models agent outputs and governance decisions without invoking an external LLM; an actual agent integration should remain behind a policy-enforced adapter and should never bypass policy or PR change-control gates.

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "dgSpecHash": "VC5BIZQZRok=",
+  "success": true,
+  "projectFilePath": "/home/dmbengwa/source/net/miscellaneous/CharlieSchwabAssessment/UrlShortener/UrlShortener.csproj",
+  "expectedPackageFiles": [
+    "/home/dmbengwa/.nuget/packages/microsoft.aspnetcore.openapi/10.0.3/microsoft.aspnetcore.openapi.10.0.3.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/microsoft.data.sqlite.core/10.0.3/microsoft.data.sqlite.core.10.0.3.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/microsoft.entityframeworkcore/10.0.3/microsoft.entityframeworkcore.10.0.3.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/microsoft.entityframeworkcore.abstractions/10.0.3/microsoft.entityframeworkcore.abstractions.10.0.3.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/microsoft.entityframeworkcore.analyzers/10.0.3/microsoft.entityframeworkcore.analyzers.10.0.3.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/microsoft.entityframeworkcore.relational/10.0.3/microsoft.entityframeworkcore.relational.10.0.3.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/microsoft.entityframeworkcore.sqlite.core/10.0.3/microsoft.entityframeworkcore.sqlite.core.10.0.3.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/microsoft.extensions.apidescription.server/10.0.0/microsoft.extensions.apidescription.server.10.0.0.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/microsoft.extensions.caching.hybrid/10.1.0/microsoft.extensions.caching.hybrid.10.1.0.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/microsoft.extensions.dependencymodel/10.0.3/microsoft.extensions.dependencymodel.10.0.3.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/microsoft.openapi/2.7.5/microsoft.openapi.2.7.5.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/sqlitepclraw.core/2.1.11/sqlitepclraw.core.2.1.11.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/sqlitepclraw.provider.sqlite3/2.1.11/sqlitepclraw.provider.sqlite3.2.1.11.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/swashbuckle.aspnetcore/10.1.0/swashbuckle.aspnetcore.10.1.0.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/swashbuckle.aspnetcore.swagger/10.1.0/swashbuckle.aspnetcore.swagger.10.1.0.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/swashbuckle.aspnetcore.swaggergen/10.1.0/swashbuckle.aspnetcore.swaggergen.10.1.0.nupkg.sha512",
+    "/home/dmbengwa/.nuget/packages/swashbuckle.aspnetcore.swaggerui/10.1.0/swashbuckle.aspnetcore.swaggerui.10.1.0.nupkg.sha512"
+  ],
+  "logs": []
+}
