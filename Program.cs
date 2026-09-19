@@ -4,7 +4,11 @@ using UrlShortener.Persistence;
 using Microsoft.EntityFrameworkCore;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Threading.RateLimiting;
 using StackExchange.Redis;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 try
 {
@@ -35,7 +39,10 @@ builder.Services.AddHybridCache(options =>
 });
 builder.Services.AddScoped<IUrlMappingRepository, SqliteUrlMappingRepository>();
 builder.Services.AddScoped<IClickEventRepository, SqliteClickEventRepository>();
-builder.Services.AddSingleton<IShortCodeGenerator, DeterministicShortCodeGenerator>();
+builder.Services.AddSingleton<IShortCodeGenerator, RandomShortCodeGenerator>();
+builder.Services.AddSingleton<IDestinationAbusePolicy>(
+    _ => new DefaultDestinationAbusePolicy(builder.Configuration.GetSection("Abuse:BlockedHosts").Get<string[]>()));
+builder.Services.AddSingleton<UrlShortenerMetrics>();
 builder.Services.AddScoped<IAuditSink, SqliteAuditSink>();
 builder.Services.AddScoped<IWorkflowStateStore, SqliteWorkflowStateStore>();
 var redisConnection = builder.Configuration["Workflow:RedisConnection"];
@@ -53,6 +60,53 @@ builder.Services.AddScoped<IWorkflowPullRequestPublisher, GitHubPullRequestPubli
 builder.Services.AddScoped<IWorkflowStageHandler, BuiltInWorkflowStageHandler>();
 builder.Services.AddScoped<UrlShortenerService>();
 builder.Services.AddScoped<OrchestrationService>();
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.OnRejected = (context, cancellationToken) =>
+    {
+        context.HttpContext.RequestServices.GetRequiredService<UrlShortenerMetrics>().RecordRateLimited(context.HttpContext.GetEndpoint()?.DisplayName ?? "unknown");
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        return ValueTask.CompletedTask;
+    };
+
+    var createLimits = builder.Configuration.GetSection("RateLimiting:ShortUrlCreate");
+    options.AddPolicy("short-url-create", httpContext => RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        factory: _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = createLimits.GetValue("PermitLimit", 10),
+            Window = TimeSpan.FromSeconds(createLimits.GetValue("WindowSeconds", 60)),
+            QueueLimit = 0
+        }));
+
+    var redirectLimits = builder.Configuration.GetSection("RateLimiting:Redirect");
+    options.AddPolicy("redirect", httpContext => RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        factory: _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = redirectLimits.GetValue("PermitLimit", 120),
+            Window = TimeSpan.FromSeconds(redirectLimits.GetValue("WindowSeconds", 60)),
+            QueueLimit = 0
+        }));
+});
+
+var otlpEndpoint = builder.Configuration["Telemetry:OtlpEndpoint"];
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService("UrlShortener", serviceVersion: "1.0.0"))
+    .WithTracing(tracing =>
+    {
+        tracing.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation();
+        if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+            tracing.AddOtlpExporter(otlp => otlp.Endpoint = new Uri(otlpEndpoint));
+    })
+    .WithMetrics(metrics =>
+    {
+        metrics.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddMeter(UrlShortenerMetrics.MeterName);
+        if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+            metrics.AddOtlpExporter(otlp => otlp.Endpoint = new Uri(otlpEndpoint));
+    });
+
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
@@ -83,6 +137,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+app.UseRateLimiter();
 
 app.UseAuthorization();
 

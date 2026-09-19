@@ -11,7 +11,8 @@ public sealed record WorkflowNode(
     string HandlerName,
     Func<WorkflowGateContext, bool> EntryGate,
     Func<WorkflowGateContext, bool> ExitGate,
-    string ArtifactKind);
+    string ArtifactKind,
+    bool RequiresApproval = false);
 
 public sealed record WorkflowGateContext(
     WorkflowRequest Request,
@@ -55,7 +56,7 @@ public sealed class OrchestrationService
             Node("implementation", ["architecture"], "implementation", "implementation-change-set"),
             Node("documentation", ["requirements", "architecture"], "documentation", "documentation"),
             Node("tests", ["implementation"], "tests", "test-execution"),
-            Node("release-readiness", ["tests", "documentation"], "release-readiness", "release-evidence")
+            Node("release-readiness", ["tests", "documentation"], "release-readiness", "release-evidence", requiresApproval: true)
         ];
     }
 
@@ -103,6 +104,22 @@ public sealed class OrchestrationService
                 await stateStore.SaveGateEvidenceAsync(new WorkflowGateEvidence(workflowId, node.Name, "entry", passed, passed ? "Dependencies and entry policy satisfied." : "Entry policy rejected the ready node.", timeProvider.GetUtcNow()), cancellationToken);
                 if (!passed)
                     return await StopAsync(workflowId, stages.Values.ToList(), "blocked", "A workflow entry gate rejected a ready node.", retries, rollbacks, stopwatch, recoveredAt, decisions, risks, artifacts.Values.ToList(), state.CorrelationId, cancellationToken);
+
+                if (node.RequiresApproval)
+                {
+                    var approval = await stateStore.GetApprovalDecisionAsync(workflowId, node.Name, cancellationToken);
+                    var approved = approval?.Decision == "approved";
+                    var rejected = approval?.Decision == "rejected";
+                    var detail = approval is null
+                        ? $"Awaiting human approval for high-impact stage '{node.Name}'."
+                        : $"{approval.Decision} by {approval.Approver}: {approval.Reason}";
+                    await stateStore.SaveGateEvidenceAsync(new WorkflowGateEvidence(workflowId, node.Name, "human-approval", approved, detail, timeProvider.GetUtcNow()), cancellationToken);
+                    Audit(workflowId, node.Name, approval is null ? "awaiting-approval" : $"approval-{approval.Decision}", detail, state.CorrelationId);
+                    if (rejected)
+                        return await StopAsync(workflowId, stages.Values.ToList(), "rejected", $"Human approval rejected high-impact stage '{node.Name}'.", retries, rollbacks, stopwatch, recoveredAt, decisions, risks, artifacts.Values.ToList(), state.CorrelationId, cancellationToken);
+                    if (!approved)
+                        return await StopAsync(workflowId, stages.Values.ToList(), "awaiting-approval", $"Stage '{node.Name}' requires human approval before executing a high-impact action.", retries, rollbacks, stopwatch, recoveredAt, decisions, risks, artifacts.Values.ToList(), state.CorrelationId, cancellationToken);
+                }
             }
 
             foreach (var node in ready)
@@ -223,8 +240,8 @@ public sealed class OrchestrationService
     private Task SaveMetricsAsync(string workflowId, int retries, int rollbacks, long recoveredAt, Stopwatch stopwatch, CancellationToken cancellationToken) =>
         stateStore.SaveMetricsAsync(workflowId, new WorkflowMetricsSnapshot(retries, rollbacks, recoveredAt + stopwatch.ElapsedMilliseconds, rollbacks == 0 ? 0 : stopwatch.ElapsedMilliseconds, timeProvider.GetUtcNow()), cancellationToken);
 
-    private WorkflowNode Node(string name, IReadOnlyList<string> dependencies, string handlerName, string artifactKind) =>
-        new(name, dependencies, handlerName, context => context.Request.Requirement.Length > 0 && (context.Request.Scenario != "ambiguous" || HasAcceptanceCriteria(context.Request.Requirement)), context => context.Artifacts.TryGetValue(name, out var artifact) && artifact.Kind == artifactKind && artifact.Content.Length > 0 && artifact.Validation.StartsWith("PASS", StringComparison.Ordinal), artifactKind);
+    private WorkflowNode Node(string name, IReadOnlyList<string> dependencies, string handlerName, string artifactKind, bool requiresApproval = false) =>
+        new(name, dependencies, handlerName, context => context.Request.Requirement.Length > 0 && (context.Request.Scenario != "ambiguous" || HasAcceptanceCriteria(context.Request.Requirement)), context => context.Artifacts.TryGetValue(name, out var artifact) && artifact.Kind == artifactKind && artifact.Content.Length > 0 && artifact.Validation.StartsWith("PASS", StringComparison.Ordinal), artifactKind, requiresApproval);
 
     private static bool HasAcceptanceCriteria(string requirement) =>
         requirement.Contains("acceptance", StringComparison.OrdinalIgnoreCase) || requirement.Contains("must", StringComparison.OrdinalIgnoreCase) || requirement.Contains("criteria", StringComparison.OrdinalIgnoreCase);

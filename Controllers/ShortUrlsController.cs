@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using UrlShortener.Application;
 
 namespace UrlShortener.Controllers;
@@ -9,6 +10,7 @@ public sealed class ShortUrlsController(UrlShortenerService service) : Controlle
 {
     /// <summary>Creates a short URL for an HTTP or HTTPS destination.</summary>
     [HttpPost]
+    [EnableRateLimiting("short-url-create")]
     [ProducesResponseType(typeof(ShortUrlResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<ShortUrlResponse>> Create(CreateShortUrlRequest request, CancellationToken cancellationToken)
@@ -30,6 +32,7 @@ public sealed class ShortUrlsController(UrlShortenerService service) : Controlle
 
     /// <summary>Resolves a short URL and records the click before redirecting.</summary>
     [HttpGet("~/r/{code}")]
+    [EnableRateLimiting("redirect")]
     [ProducesResponseType(StatusCodes.Status302Found)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> RedirectToDestination(string code, CancellationToken cancellationToken)

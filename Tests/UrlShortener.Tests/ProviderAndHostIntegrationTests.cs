@@ -33,6 +33,21 @@ public sealed class ProviderAndHostIntegrationTests
     }
 
     [Fact]
+    public async Task ShortUrlCreationIsRateLimitedPerClient()
+    {
+        using var factory = new UrlShortenerWebApplicationFactory(rateLimitPermitLimit: 2);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+
+        using var first = await client.PostAsJsonAsync("/api/short-urls", new { destination = "https://example.com/rate-1" });
+        using var second = await client.PostAsJsonAsync("/api/short-urls", new { destination = "https://example.com/rate-2" });
+        using var third = await client.PostAsJsonAsync("/api/short-urls", new { destination = "https://example.com/rate-3" });
+
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, second.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
+    }
+
+    [Fact]
     public async Task DeployedRedisLeaseContractWorksWhenEnabled()
     {
         if (!string.Equals(Environment.GetEnvironmentVariable("RUN_DEPLOYED_PROVIDER_CONTRACTS"), "true", StringComparison.OrdinalIgnoreCase))
@@ -68,13 +83,15 @@ public sealed class ProviderAndHostIntegrationTests
         Assert.Equal(repository.Split('/')[1], payload.GetProperty("name").GetString());
     }
 
-    private sealed class UrlShortenerWebApplicationFactory : WebApplicationFactory<Program>
+    private sealed class UrlShortenerWebApplicationFactory(int? rateLimitPermitLimit = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
             builder.UseSetting("ConnectionStrings:UrlShortener", $"Data Source=host-test-{Guid.NewGuid():N}.db");
             builder.UseSetting("Workflow:SourceRoot", Path.GetTempPath());
+            if (rateLimitPermitLimit is not null)
+                builder.UseSetting("RateLimiting:ShortUrlCreate:PermitLimit", rateLimitPermitLimit.Value.ToString());
         }
     }
 }

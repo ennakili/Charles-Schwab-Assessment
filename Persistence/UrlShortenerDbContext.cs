@@ -12,6 +12,7 @@ public sealed class UrlShortenerDbContext(DbContextOptions<UrlShortenerDbContext
     public DbSet<WorkflowArtifactEntity> WorkflowArtifacts => Set<WorkflowArtifactEntity>();
     public DbSet<WorkflowGateEvidenceEntity> WorkflowGateEvidence => Set<WorkflowGateEvidenceEntity>();
     public DbSet<WorkflowLeaseEntity> WorkflowLeases => Set<WorkflowLeaseEntity>();
+    public DbSet<WorkflowApprovalEntity> WorkflowApprovals => Set<WorkflowApprovalEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -77,6 +78,13 @@ public sealed class UrlShortenerDbContext(DbContextOptions<UrlShortenerDbContext
             entity.HasKey(item => item.WorkflowId);
             entity.Property(item => item.OwnerId).IsRequired();
             entity.Property(item => item.ExpiresAt).IsRequired();
+        });
+
+        modelBuilder.Entity<WorkflowApprovalEntity>(entity =>
+        {
+            entity.HasKey(item => new { item.WorkflowId, item.Stage });
+            entity.Property(item => item.Decision).IsRequired();
+            entity.Property(item => item.Approver).IsRequired();
         });
     }
 }
@@ -170,4 +178,14 @@ public sealed class WorkflowLeaseEntity
     public required string WorkflowId { get; set; }
     public required string OwnerId { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
+}
+
+public sealed class WorkflowApprovalEntity
+{
+    public required string WorkflowId { get; set; }
+    public required string Stage { get; set; }
+    public required string Decision { get; set; }
+    public required string Approver { get; set; }
+    public string? Reason { get; set; }
+    public DateTimeOffset DecidedAt { get; set; }
 }

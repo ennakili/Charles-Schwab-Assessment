@@ -58,6 +58,7 @@ public sealed class SqliteWorkflowStateStore(UrlShortenerDbContext db) : IWorkfl
         await db.WorkflowStages.Where(item => item.WorkflowId == workflowId && impactedStages.Contains(item.Stage)).ExecuteDeleteAsync(cancellationToken);
         await db.WorkflowArtifacts.Where(item => item.WorkflowId == workflowId && impactedStages.Contains(item.Stage)).ExecuteDeleteAsync(cancellationToken);
         await db.WorkflowGateEvidence.Where(item => item.WorkflowId == workflowId && impactedStages.Contains(item.Stage)).ExecuteDeleteAsync(cancellationToken);
+        await db.WorkflowApprovals.Where(item => item.WorkflowId == workflowId && impactedStages.Contains(item.Stage)).ExecuteDeleteAsync(cancellationToken);
         db.ChangeTracker.Clear();
         var workflow = await db.Workflows.SingleAsync(item => item.WorkflowId == workflowId, cancellationToken);
         workflow.Requirement = requirement;
@@ -182,6 +183,28 @@ public sealed class SqliteWorkflowStateStore(UrlShortenerDbContext db) : IWorkfl
             .ThenBy(item => item.Gate)
             .Select(item => new WorkflowGateEvidence(item.WorkflowId, item.Stage, item.Gate, item.Passed, item.Detail, item.EvaluatedAt))
             .ToListAsync(cancellationToken);
+
+    public async Task SaveApprovalDecisionAsync(string workflowId, string stage, string decision, string approver, string? reason, DateTimeOffset decidedAt, CancellationToken cancellationToken)
+    {
+        var entity = await db.WorkflowApprovals.SingleOrDefaultAsync(item => item.WorkflowId == workflowId && item.Stage == stage, cancellationToken);
+        if (entity is null)
+        {
+            entity = new WorkflowApprovalEntity { WorkflowId = workflowId, Stage = stage, Decision = decision, Approver = approver };
+            db.WorkflowApprovals.Add(entity);
+        }
+
+        entity.Decision = decision;
+        entity.Approver = approver;
+        entity.Reason = reason;
+        entity.DecidedAt = decidedAt;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<WorkflowApprovalDecision?> GetApprovalDecisionAsync(string workflowId, string stage, CancellationToken cancellationToken)
+    {
+        var entity = await db.WorkflowApprovals.AsNoTracking().SingleOrDefaultAsync(item => item.WorkflowId == workflowId && item.Stage == stage, cancellationToken);
+        return entity is null ? null : new WorkflowApprovalDecision(entity.WorkflowId, entity.Stage, entity.Decision, entity.Approver, entity.Reason, entity.DecidedAt);
+    }
 
     private static WorkflowState ToState(WorkflowEntity entity) => new(
         entity.WorkflowId,

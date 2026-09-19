@@ -100,6 +100,14 @@ public sealed record WorkflowMetricsSnapshot(
 
 public sealed record WorkflowLease(string WorkflowId, string OwnerId, DateTimeOffset ExpiresAt);
 
+public sealed record WorkflowApprovalDecision(
+    string WorkflowId,
+    string Stage,
+    string Decision,
+    string Approver,
+    string? Reason,
+    DateTimeOffset DecidedAt);
+
 public interface IWorkflowExecutionLock
 {
     Task<WorkflowLease> AcquireAsync(string workflowId, TimeSpan duration, CancellationToken cancellationToken);
@@ -149,6 +157,8 @@ public interface IWorkflowStateStore
     Task ReleaseLeaseAsync(WorkflowLease lease, CancellationToken cancellationToken);
     Task ReconcileInterruptedAsync(string workflowId, CancellationToken cancellationToken);
     Task ReplanAsync(string workflowId, string requirement, string scenario, string requirementRevision, IReadOnlyList<string> impactedStages, CancellationToken cancellationToken);
+    Task SaveApprovalDecisionAsync(string workflowId, string stage, string decision, string approver, string? reason, DateTimeOffset decidedAt, CancellationToken cancellationToken);
+    Task<WorkflowApprovalDecision?> GetApprovalDecisionAsync(string workflowId, string stage, CancellationToken cancellationToken);
 }
 
 public sealed record WorkflowResult(

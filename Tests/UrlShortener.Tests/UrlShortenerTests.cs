@@ -30,6 +30,56 @@ public sealed class UrlShortenerTests
         Assert.Contains("HTTP or HTTPS", exception.Message);
     }
 
+    [Theory]
+    [InlineData("http://127.0.0.1/admin")]
+    [InlineData("http://localhost/admin")]
+    [InlineData("http://169.254.169.254/latest/meta-data")]
+    [InlineData("http://10.0.0.5/internal")]
+    [InlineData("http://192.168.1.5/internal")]
+    public async Task CreateRejectsPrivateAndLinkLocalDestinations(string destination)
+    {
+        await using var environment = await TestEnvironment.CreateAsync();
+
+        var exception = await Assert.ThrowsAsync<UrlShortener.Models.UrlShortenerException>(() =>
+            environment.Service.CreateAsync(new CreateShortUrlCommand(destination, null), "https://short.test", CancellationToken.None));
+
+        Assert.Contains("host", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DestinationAbusePolicyRejectsConfiguredBlockedHost()
+    {
+        var policy = new DefaultDestinationAbusePolicy(new[] { "internal.example.com" });
+
+        Assert.Throws<UrlShortener.Models.UrlShortenerException>(() => policy.Validate(new Uri("https://internal.example.com/service")));
+        Assert.Throws<UrlShortener.Models.UrlShortenerException>(() => policy.Validate(new Uri("https://reports.internal.example.com/service")));
+        policy.Validate(new Uri("https://public.example.com/service"));
+    }
+
+    [Fact]
+    public void RandomShortCodeGeneratorProducesWellFormedUniqueCodes()
+    {
+        var generator = new RandomShortCodeGenerator();
+
+        var codes = Enumerable.Range(0, 100).Select(_ => generator.Generate("https://example.com")).ToList();
+
+        Assert.All(codes, code => Assert.Equal(8, code.Length));
+        Assert.All(codes, code => Assert.Matches("^[0-9a-zA-Z]{8}$", code));
+        Assert.Equal(codes.Count, codes.Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public async Task CreateRetriesOnShortCodeCollisionAndSucceeds()
+    {
+        await using var environment = await TestEnvironment.CreateAsync();
+        var service = environment.CreateService(new SequenceShortCodeGenerator("duplicate-code", "duplicate-code", "unique-code"));
+        await service.CreateAsync(new CreateShortUrlCommand("https://example.com/first", null), "https://short.test", CancellationToken.None);
+
+        var result = await service.CreateAsync(new CreateShortUrlCommand("https://example.com/second", null), "https://short.test", CancellationToken.None);
+
+        Assert.Equal("unique-code", result.Code);
+    }
+
     [Fact]
     public async Task ResolveIncrementsAnalyticsInSqlite()
     {
@@ -60,14 +110,20 @@ public sealed class UrlShortenerTests
     public async Task WorkflowExecutesAndPersistsCheckpoints()
     {
         await using var environment = await TestEnvironment.CreateAsync();
-        var workflow = new OrchestrationService(new SqliteAuditSink(environment.Db), new SqliteWorkflowStateStore(environment.Db), new[] { (IWorkflowStageHandler)new BuiltInWorkflowStageHandler(new FakeTestRunner(), new SourceTreeChangeApplier(environment.SourceRoot), new FakePullRequestPublisher(), TimeProvider.System) }, TimeProvider.System);
+        var stateStore = new SqliteWorkflowStateStore(environment.Db);
+        var workflow = new OrchestrationService(new SqliteAuditSink(environment.Db), stateStore, new[] { (IWorkflowStageHandler)new BuiltInWorkflowStageHandler(new FakeTestRunner(), new SourceTreeChangeApplier(environment.SourceRoot), new FakePullRequestPublisher(), TimeProvider.System) }, TimeProvider.System);
+        var workflowId = Guid.NewGuid().ToString("N");
+        await stateStore.SaveApprovalDecisionAsync(workflowId, "release-readiness", "approved", "reviewer@example.com", "Pre-approved for test.", DateTimeOffset.UtcNow, CancellationToken.None);
 
-        var initial = await workflow.ExecuteAsync(new WorkflowRequest("Add analytics", "brownfield"), CancellationToken.None);
+        var initial = await workflow.ExecuteAsync(new WorkflowRequest("Add analytics", "brownfield", WorkflowId: workflowId), CancellationToken.None);
+        var awaitingApproval = await workflow.ExecuteAsync(new WorkflowRequest("Change flaky analytics after a change", "brownfield", WorkflowId: initial.WorkflowId), CancellationToken.None);
+        Assert.Equal("awaiting-approval", awaitingApproval.Status);
+        Assert.Contains(awaitingApproval.Decisions, decision => decision.Contains("re-planned", StringComparison.OrdinalIgnoreCase));
+        await stateStore.SaveApprovalDecisionAsync(awaitingApproval.WorkflowId, "release-readiness", "approved", "reviewer@example.com", "Re-approved after re-plan.", DateTimeOffset.UtcNow, CancellationToken.None);
         var completed = await workflow.ExecuteAsync(new WorkflowRequest("Change flaky analytics after a change", "brownfield", WorkflowId: initial.WorkflowId), CancellationToken.None);
 
         Assert.Equal("completed", completed.Status);
         Assert.Equal(1, completed.Metrics.RetryCount);
-        Assert.Contains(completed.Decisions, decision => decision.Contains("re-planned", StringComparison.OrdinalIgnoreCase));
         Assert.True(await environment.Db.AuditEvents.AnyAsync(item => item.Action == "retry"));
         Assert.Equal(4, await environment.Db.AuditEvents.CountAsync(item => item.Action == "worker-started" && (item.Stage == "implementation" || item.Stage == "documentation")));
         Assert.Equal("completed", (await environment.Db.Workflows.SingleAsync(item => item.WorkflowId == completed.WorkflowId)).Status);
@@ -75,12 +131,13 @@ public sealed class UrlShortenerTests
         Assert.Equal(completed.Metrics.RetryCount, persistedMetrics.RetryCount);
         Assert.True(persistedMetrics.EndToEndLatencyMs >= 0);
         Assert.Equal(completed.Stages.Count, await environment.Db.WorkflowStages.CountAsync(item => item.WorkflowId == completed.WorkflowId));
-        Assert.Equal(12, await environment.Db.WorkflowGateEvidence.CountAsync(item => item.WorkflowId == completed.WorkflowId));
+        Assert.Equal(13, await environment.Db.WorkflowGateEvidence.CountAsync(item => item.WorkflowId == completed.WorkflowId));
         Assert.True(await environment.Db.WorkflowGateEvidence.Where(item => item.WorkflowId == completed.WorkflowId).AllAsync(item => item.Passed));
-        var gateEvidence = await new SqliteWorkflowStateStore(environment.Db).GetGateEvidenceAsync(completed.WorkflowId, CancellationToken.None);
-        Assert.Equal(12, gateEvidence.Count);
+        var gateEvidence = await stateStore.GetGateEvidenceAsync(completed.WorkflowId, CancellationToken.None);
+        Assert.Equal(13, gateEvidence.Count);
         Assert.Contains(gateEvidence, item => item.Stage == "implementation" && item.Gate == "entry");
         Assert.Contains(gateEvidence, item => item.Stage == "release-readiness" && item.Gate == "exit");
+        Assert.Contains(gateEvidence, item => item.Stage == "release-readiness" && item.Gate == "human-approval" && item.Passed);
         var persistedArtifacts = await environment.Db.WorkflowArtifacts.Where(item => item.WorkflowId == completed.WorkflowId).ToListAsync();
         Assert.Equal(6, persistedArtifacts.Count);
         Assert.All(persistedArtifacts, artifact =>
@@ -158,9 +215,13 @@ public sealed class UrlShortenerTests
     public async Task AmbiguousScenarioStopsUntilAcceptanceCriteriaAreProvided()
     {
         await using var environment = await TestEnvironment.CreateAsync();
-        var workflow = new OrchestrationService(new SqliteAuditSink(environment.Db), new SqliteWorkflowStateStore(environment.Db), new[] { (IWorkflowStageHandler)new BuiltInWorkflowStageHandler(new FakeTestRunner(), new SourceTreeChangeApplier(environment.SourceRoot), new FakePullRequestPublisher(), TimeProvider.System) }, TimeProvider.System);
+        var stateStore = new SqliteWorkflowStateStore(environment.Db);
+        var workflow = new OrchestrationService(new SqliteAuditSink(environment.Db), stateStore, new[] { (IWorkflowStageHandler)new BuiltInWorkflowStageHandler(new FakeTestRunner(), new SourceTreeChangeApplier(environment.SourceRoot), new FakePullRequestPublisher(), TimeProvider.System) }, TimeProvider.System);
 
         var blocked = await workflow.ExecuteAsync(new WorkflowRequest("Make links fast and reliable", "ambiguous"), CancellationToken.None);
+        var awaitingApproval = await workflow.ExecuteAsync(new WorkflowRequest("Make links fast and reliable with acceptance criteria: p95 latency must be under 100ms", "ambiguous", WorkflowId: blocked.WorkflowId), CancellationToken.None);
+        Assert.Equal("awaiting-approval", awaitingApproval.Status);
+        await stateStore.SaveApprovalDecisionAsync(blocked.WorkflowId, "release-readiness", "approved", "reviewer@example.com", "Approved after acceptance criteria clarified.", DateTimeOffset.UtcNow, CancellationToken.None);
         var completed = await workflow.ExecuteAsync(new WorkflowRequest("Make links fast and reliable with acceptance criteria: p95 latency must be under 100ms", "ambiguous", WorkflowId: blocked.WorkflowId), CancellationToken.None);
 
         Assert.Equal("blocked", blocked.Status);
@@ -204,13 +265,59 @@ public sealed class UrlShortenerTests
         await using var environment = await TestEnvironment.CreateAsync();
         var stateStore = new SqliteWorkflowStateStore(environment.Db);
         var workflow = new OrchestrationService(new SqliteAuditSink(environment.Db), stateStore, new[] { (IWorkflowStageHandler)new BuiltInWorkflowStageHandler(new FakeTestRunner(), new SourceTreeChangeApplier(environment.SourceRoot), new FakePullRequestPublisher(), TimeProvider.System) }, TimeProvider.System);
-        var completed = await workflow.ExecuteAsync(new WorkflowRequest("Run checks", "greenfield"), CancellationToken.None);
+        var workflowId = Guid.NewGuid().ToString("N");
+        await stateStore.SaveApprovalDecisionAsync(workflowId, "release-readiness", "approved", "reviewer@example.com", "Pre-approved for test.", DateTimeOffset.UtcNow, CancellationToken.None);
+        var completed = await workflow.ExecuteAsync(new WorkflowRequest("Run checks", "greenfield", WorkflowId: workflowId), CancellationToken.None);
         var controller = new WorkflowController(workflow, stateStore);
 
         var result = await controller.Gates(completed.WorkflowId, CancellationToken.None);
 
         var response = Assert.IsType<OkObjectResult>(result.Result);
-        Assert.Equal(12, Assert.IsAssignableFrom<IReadOnlyList<WorkflowGateEvidence>>(response.Value).Count);
+        Assert.Equal(13, Assert.IsAssignableFrom<IReadOnlyList<WorkflowGateEvidence>>(response.Value).Count);
+    }
+
+    [Fact]
+    public async Task ReleaseReadinessStopsForHumanApprovalAndResumesAfterApproval()
+    {
+        await using var environment = await TestEnvironment.CreateAsync();
+        var audit = new SqliteAuditSink(environment.Db);
+        var stateStore = new SqliteWorkflowStateStore(environment.Db);
+        var workflow = new OrchestrationService(audit, stateStore, new[] { (IWorkflowStageHandler)new BuiltInWorkflowStageHandler(new FakeTestRunner(), new SourceTreeChangeApplier(environment.SourceRoot), new FakePullRequestPublisher(), TimeProvider.System) }, TimeProvider.System);
+        var controller = new WorkflowController(workflow, stateStore);
+
+        var awaiting = await workflow.ExecuteAsync(new WorkflowRequest("Add analytics", "greenfield"), CancellationToken.None);
+
+        Assert.Equal("awaiting-approval", awaiting.Status);
+        Assert.DoesNotContain(awaiting.Artifacts, artifact => artifact.Stage == "release-readiness");
+        Assert.Contains(audit.ReadAll(), item => item.WorkflowId == awaiting.WorkflowId && item.Action == "awaiting-approval");
+        var pendingGate = Assert.Single(await stateStore.GetGateEvidenceAsync(awaiting.WorkflowId, CancellationToken.None), item => item.Stage == "release-readiness" && item.Gate == "human-approval");
+        Assert.False(pendingGate.Passed);
+        Assert.Null(await stateStore.GetApprovalDecisionAsync(awaiting.WorkflowId, "release-readiness", CancellationToken.None));
+
+        var approveResult = await controller.Approve(awaiting.WorkflowId, new WorkflowApprovalRequest("release-readiness", "approved", "reviewer@example.com", "Looks good."), CancellationToken.None);
+        Assert.IsType<AcceptedResult>(approveResult);
+        var storedApproval = Assert.IsType<OkObjectResult>((await controller.GetApproval(awaiting.WorkflowId, "release-readiness", CancellationToken.None)).Result).Value as WorkflowApprovalDecision;
+        Assert.Equal("approved", storedApproval!.Decision);
+
+        var completed = await workflow.ExecuteAsync(new WorkflowRequest("Add analytics", "greenfield", WorkflowId: awaiting.WorkflowId), CancellationToken.None);
+
+        Assert.Equal("completed", completed.Status);
+        Assert.Contains(completed.Artifacts, artifact => artifact.Kind == "release-evidence");
+    }
+
+    [Fact]
+    public async Task RejectedApprovalStopsWorkflowPermanently()
+    {
+        await using var environment = await TestEnvironment.CreateAsync();
+        var stateStore = new SqliteWorkflowStateStore(environment.Db);
+        var workflow = new OrchestrationService(new SqliteAuditSink(environment.Db), stateStore, new[] { (IWorkflowStageHandler)new BuiltInWorkflowStageHandler(new FakeTestRunner(), new SourceTreeChangeApplier(environment.SourceRoot), new FakePullRequestPublisher(), TimeProvider.System) }, TimeProvider.System);
+
+        var awaiting = await workflow.ExecuteAsync(new WorkflowRequest("Add analytics", "greenfield"), CancellationToken.None);
+        await stateStore.SaveApprovalDecisionAsync(awaiting.WorkflowId, "release-readiness", "rejected", "reviewer@example.com", "Not ready for release.", DateTimeOffset.UtcNow, CancellationToken.None);
+        var rejected = await workflow.ExecuteAsync(new WorkflowRequest("Add analytics", "greenfield", WorkflowId: awaiting.WorkflowId), CancellationToken.None);
+
+        Assert.Equal("rejected", rejected.Status);
+        Assert.Equal("rejected", (await environment.Db.Workflows.SingleAsync(item => item.WorkflowId == awaiting.WorkflowId)).Status);
     }
 
     [Fact]
@@ -219,9 +326,12 @@ public sealed class UrlShortenerTests
         await using var environment = await TestEnvironment.CreateAsync();
         var externalHandler = new ExternalArchitectureHandler();
         var builtIn = new BuiltInWorkflowStageHandler(new FakeTestRunner(), new SourceTreeChangeApplier(environment.SourceRoot), new FakePullRequestPublisher(), TimeProvider.System);
-        var workflow = new OrchestrationService(new SqliteAuditSink(environment.Db), new SqliteWorkflowStateStore(environment.Db), new[] { (IWorkflowStageHandler)externalHandler, builtIn }, TimeProvider.System);
+        var stateStore = new SqliteWorkflowStateStore(environment.Db);
+        var workflow = new OrchestrationService(new SqliteAuditSink(environment.Db), stateStore, new[] { (IWorkflowStageHandler)externalHandler, builtIn }, TimeProvider.System);
+        var workflowId = Guid.NewGuid().ToString("N");
+        await stateStore.SaveApprovalDecisionAsync(workflowId, "release-readiness", "approved", "reviewer@example.com", "Pre-approved for test.", DateTimeOffset.UtcNow, CancellationToken.None);
 
-        var result = await workflow.ExecuteAsync(new WorkflowRequest("Create a greenfield URL shortener", "greenfield"), CancellationToken.None);
+        var result = await workflow.ExecuteAsync(new WorkflowRequest("Create a greenfield URL shortener", "greenfield", WorkflowId: workflowId), CancellationToken.None);
 
         Assert.Equal("completed", result.Status);
         Assert.True(externalHandler.Executed);
@@ -266,6 +376,7 @@ public sealed class UrlShortenerTests
         private readonly SqliteConnection connection;
         private readonly ServiceProvider cacheProvider;
         private readonly string sourceRoot;
+        private readonly TimeProvider timeProvider;
         public UrlShortenerDbContext Db { get; }
         public UrlShortenerService Service { get; }
         public string SourceRoot => sourceRoot;
@@ -276,12 +387,15 @@ public sealed class UrlShortenerTests
             Db = db;
             this.cacheProvider = cacheProvider;
             this.sourceRoot = sourceRoot;
-            Service = new UrlShortenerService(
-                new SqliteUrlMappingRepository(db, cacheProvider.GetRequiredService<HybridCache>()),
-                new SqliteClickEventRepository(db),
-                new DeterministicShortCodeGenerator(),
-                timeProvider);
+            this.timeProvider = timeProvider;
+            Service = CreateService(new DeterministicShortCodeGenerator());
         }
+
+        public UrlShortenerService CreateService(IShortCodeGenerator generator) =>
+            new(new SqliteUrlMappingRepository(Db, cacheProvider.GetRequiredService<HybridCache>()),
+                new SqliteClickEventRepository(Db),
+                generator,
+                timeProvider);
 
         public static async Task<TestEnvironment> CreateAsync(TimeProvider? timeProvider = null)
         {
@@ -316,6 +430,12 @@ public sealed class UrlShortenerTests
             await connection.DisposeAsync();
             Directory.Delete(sourceRoot, true);
         }
+    }
+
+    private sealed class SequenceShortCodeGenerator(params string[] codes) : IShortCodeGenerator
+    {
+        private int index;
+        public string Generate(string destination) => codes[Math.Min(index++, codes.Length - 1)];
     }
 
     private sealed class ExternalArchitectureHandler : IWorkflowStageHandler

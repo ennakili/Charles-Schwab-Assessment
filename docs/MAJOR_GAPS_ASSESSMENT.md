@@ -16,59 +16,44 @@ Agent/tool-backed handlers can now be registered for individual stages while pre
 
 ### 2. Graph scheduling and gates are implemented, but stage outputs are simulated
 
-The graph now validates unknown dependencies and cycles, computes ready nodes from completed dependencies, runs each ready wave as isolated concurrent workers, applies entry and exit gates, executes repository tests, and produces hashed release evidence. Remaining gaps are:
+The graph now validates unknown dependencies and cycles, computes ready nodes from completed dependencies, runs each ready wave as isolated concurrent workers, applies entry and exit gates, persists first-class entry/exit gate evidence alongside stage artifacts, exposes that evidence through `GET /api/workflows/{workflowId}/gates`, executes repository tests, produces hashed release evidence, applies implementation manifests to committed workflow branches, pushes those branches, and creates GitHub pull requests containing the review evidence. Remaining gaps are:
 
-- persist gate decisions as first-class records; or
-- apply generated implementation changes to a separate branch or isolated workspace for production-grade change control.
+- provide deployment-specific reviewer, required-check, label, and merge-queue values through secured environment configuration.
 
-A production graph executor should run independent ready nodes concurrently and persist gate evidence alongside each artifact.
+Dashboards can consume the gate-evidence endpoint for operational review and trend reporting.
 
 ### 3. Rollback and fallback behavior are not meaningfully exercised
 
-The normal workflow path succeeds for every stage. The rollback branch is effectively unreachable except through future code changes or cancellation, and no stage mutation is restored when rollback occurs.
+The workflow supports deterministic stage-failure injection, structured transient/permanent/external-side-effect classification, bounded retries, rollback status, and handler compensation outcomes. Implementation failures remove generated source-tree changes through the configured change applier, and failure class plus compensation status are persisted with the stage checkpoint. External agent/tool handlers must implement the same compensation contract before they can participate in production execution.
 
-The prototype needs injectable stage failures and compensating actions so that retry, fallback, rollback, and safe-stop behavior can be tested end to end.
+### 4. Workflow state and execution metrics are durable
 
-### 4. Workflow state is durable, but execution metrics are not checkpointed
+URL mappings, click events, audit events, workflow stage checkpoints, retry/rollback/latency snapshots, and idempotency keys now use SQLite. Workflows can resume from a supplied workflow ID after a process restart, and repeated requests with the same idempotency key reuse the existing workflow. PR review and merge authorization remain external delivery controls.
 
-URL mappings, click events, audit events, and workflow stage checkpoints now use SQLite. Workflows can resume from a supplied workflow ID after a process restart. Full workflow recovery still needs durable retry/metric snapshots and idempotency keys. PR review and merge authorization remain external delivery controls.
+The objective calls for stateful execution. SQLite leases now prevent concurrent execution for the same workflow, expire for stale-worker takeover, renew during execution, and reconcile interrupted `running` workflows as `recovering`. When `Workflow:RedisConnection` is configured, orchestration uses Redis leases with atomic acquire, renew, and owner-checked release for highly available multi-instance deployments; SQLite remains the local fallback.
 
-The objective calls for stateful execution. Remaining production work includes durable retry/metric snapshots, idempotency keys, and stronger recovery after interruption.
+### 5. Re-planning is revision-aware
 
-### 5. Re-planning is keyword-based
+Workflow requests receive a deterministic requirement revision. When a resumed workflow receives a new revision, the requirements record is preserved, architecture and downstream stages/artifacts/gate evidence are invalidated, and the graph regenerates them under the same workflow ID with an audit lineage event.
 
-A requirement containing the word `change` causes a re-planning message to be added, but downstream outputs are not actually invalidated, regenerated, or revalidated.
-
-Re-planning should compare requirement versions, identify affected graph nodes, mark their outputs stale, and rerun only the impacted stages while preserving lineage.
+Re-planning now delegates semantic comparison to the pluggable `IWorkflowImpactAnalyzer`, which receives the previous/current requirement and persisted artifacts, selects changed graph roots, and then computes the transitive dependency closure. Only impacted stages, artifacts, and gate evidence are invalidated while unaffected checkpoints and lineage are preserved. External agent/tool analyzers can replace the deterministic default without changing orchestration.
 
 ### 6. Required scenarios are documented more strongly than implemented
 
-Greenfield, brownfield, and ambiguous scenarios are described in the README, but the runtime primarily treats them as strings. In particular:
+Greenfield, brownfield, and ambiguous scenarios now have executable runtime policy. Greenfield produces a new-system plan, brownfield produces a change-existing-system plan that references prior artifacts, and ambiguous requirements stop at the requirements entry gate until explicit acceptance criteria are supplied. Clarified ambiguous workflows can resume under the same workflow ID and complete the graph.
 
-- greenfield does not produce distinct generated artifacts;
-- brownfield does not apply a real change to an existing artifact set; and
-- ambiguous requirements do not remain blocked until acceptance criteria are clarified.
+Scenario-specific artifacts and safe-stop behavior are covered by executable tests, and an external stage-specific HTTP agent handler is exercised end to end against an ASP.NET provider test server using the same artifact, gate, persistence, and compensation contracts. An opt-in deployed-provider contract test now exercises the same execute and compensate endpoints against `AGENT_PROVIDER_BASE_URL`; production validation can run it explicitly in deployment environments.
 
-Each scenario should have an executable request, scenario-specific decomposition, validation evidence, assumptions, and expected limitations.
+### 7. Core workflow test coverage is implemented
 
-### 7. Test coverage is too narrow for the objective
-
-Current tests cover URL validation, expiry, click analytics, durable checkpoints, retry counting, re-planning metadata, and audit output. Missing coverage includes:
-
-- controller and HTTP contract tests;
-- dependency graph validation;
-- parallel-stage synchronization;
-- injected stage failures;
-- fallback and rollback behavior;
-- durable checkpoint recovery;
-- ambiguous-requirement safe-stop behavior; and
-- audit completeness and correlation across retries and re-plans.
+The test suite now covers URL validation, expiry, click analytics, full host-level HTTP API behavior, HTTP controller contracts, dependency-gate safe-stop, parallel ready-node evidence, injected transient/permanent/external-side-effect failures, rollback compensation, durable checkpoint recovery, idempotency, requirement re-planning, gate-evidence API output, and audit correlation. Opt-in provider-backed contract tests cover deployed agent providers, Redis lease acquire/renew/release, and GitHub repository access. Remaining validation is execution against deployment-specific provider environments.
 
 ## Capabilities Already Demonstrated
 
 - Runnable .NET 10 URL shortener API.
 - Explicit dependency graph with computed ready-node scheduling.
 - Entry and exit gates for every workflow node.
+- Human approval checkpoint gating the release-readiness stage before it pushes a branch or opens a pull request, with persisted approve/reject decisions, `awaiting-approval`/`rejected` workflow states, audit events, and re-approval required after re-planning.
 - URL validation for absolute HTTP and HTTPS destinations.
 - Expiration handling.
 - Click counting and basic analytics.
@@ -78,17 +63,20 @@ Current tests cover URL validation, expiry, click analytics, durable checkpoints
 - Basic success, retry, rollback, latency, and recovery metrics.
 - Parallel-ready documentation path synchronized before release readiness.
 - Setup, architecture, scenario, risk, trade-off, and limitation documentation.
+- Focused executable coverage for workflow safety, persistence, recovery, and HTTP contracts.
+- External stage-handler integration coverage preserving artifact and gate contracts.
 
 ## Recommended Remediation Order
 
-1. Add durable retry/metric snapshots and idempotency keys.
-2. Execute independent ready nodes as isolated concurrent workers.
-3. Add agent/tool-backed implementations of the stage handler interface.
-4. Add injectable failures and compensating actions for retry, fallback, rollback, and safe-stop tests.
-5. Implement requirement versioning and selective downstream re-planning.
-6. Add executable greenfield, brownfield, and ambiguous scenario integration tests.
-7. Integrate authenticated PR review and merge controls in the delivery pipeline.
-8. Add production adapters for distributed uniqueness, rate limiting, abuse protection, and structured telemetry.
+1. ~~Run the opt-in provider contracts against deployment-specific Redis, GitHub, and agent-tool environments.~~ Done for Redis and the agent-tool provider: `DeployedRedisLeaseContractWorksWhenEnabled` passed against a local Redis container (`REDIS_CONNECTION=127.0.0.1:16379`), and `DeployedAgentProviderHonorsExecuteAndCompensateContract` passed against a standalone ASP.NET Core host implementing the `stages/{stage}/execute` and `stages/{stage}/compensate` contract (`AGENT_PROVIDER_BASE_URL=http://127.0.0.1:5299`). The GitHub contract test (`DeployedGitHubContractCanReadRepositoryWhenEnabled`) still requires a real `GITHUB_TOKEN` with read access to the target repository; it was not run here because no token is available in this environment. Run it separately with:
+
+   ```bash
+   RUN_DEPLOYED_PROVIDER_CONTRACTS=true GITHUB_TOKEN=<token> GITHUB_REPOSITORY=<owner>/<repo> \
+   dotnet test Tests/UrlShortener.Tests/UrlShortener.Tests.csproj --filter DeployedGitHubContractCanReadRepositoryWhenEnabled
+   ```
+
+2. ~~Configure repository-specific PR review and merge policies in deployment environments.~~ Done: `appsettings.Production.json` now requires the existing `.github/workflows/ci.yml` `build-and-test` check via `Workflow:RequiredChecks`, and `GitHubPullRequestPublisher` validates that check is enforced by GitHub branch protection before treating a workflow as release-ready. Reviewers/team reviewers were intentionally left unset pending an explicit reviewer-assignment decision for this repository; README documents the `Workflow__Reviewers__0` / `Workflow__TeamReviewers__0` overrides and the one-time `gh api` command to configure branch protection.
+3. ~~Add production adapters for distributed uniqueness, rate limiting, abuse protection, and structured telemetry.~~ Done: `RandomShortCodeGenerator` replaces the process-local sequence generator with cryptographically random codes, and `SqliteUrlMappingRepository` pre-checks for an existing code and detaches failed inserts from the change tracker so collisions retry cleanly under bounded attempts in `UrlShortenerService`. `DefaultDestinationAbusePolicy` blocks loopback, private-network, link-local (including the `169.254.169.254` cloud metadata endpoint), and configured blocked hostnames to reduce SSRF/abuse risk. ASP.NET Core's built-in rate limiter enforces per-client-IP fixed-window limits on short URL creation and redirects (`RateLimiting:ShortUrlCreate` / `RateLimiting:Redirect`, stricter in production) and returns `429`. OpenTelemetry now instruments ASP.NET Core and `HttpClient` tracing plus a custom `UrlShortener` meter (created/resolved/rejected/code-collision/rate-limited counters), exportable via OTLP through `Telemetry:OtlpEndpoint`. Remaining follow-up: point `Telemetry:OtlpEndpoint` at a real collector and tune per-environment rate limits under production load.
 
 ## Conclusion
 

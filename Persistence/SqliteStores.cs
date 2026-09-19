@@ -13,6 +13,9 @@ public sealed class SqliteUrlMappingRepository(
 
     public async Task<UrlMapping> AddAsync(UrlMapping mapping, CancellationToken cancellationToken)
     {
+        if (await db.UrlMappings.AsNoTracking().AnyAsync(item => item.Code == mapping.Code, cancellationToken))
+            throw new ShortCodeCollisionException(mapping.Code);
+
         var entity = ToEntity(mapping);
         db.UrlMappings.Add(entity);
         try
@@ -21,7 +24,8 @@ public sealed class SqliteUrlMappingRepository(
         }
         catch (DbUpdateException exception)
         {
-            throw new UrlShortenerException("The short code already exists.", exception);
+            db.Entry(entity).State = EntityState.Detached;
+            throw new ShortCodeCollisionException(mapping.Code, exception);
         }
 
         await cache.SetAsync(CacheKey(mapping.Code), mapping, cancellationToken: cancellationToken);
