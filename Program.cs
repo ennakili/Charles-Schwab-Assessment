@@ -61,6 +61,11 @@ builder.Services.AddScoped<IWorkflowStageHandler, BuiltInWorkflowStageHandler>()
 builder.Services.AddScoped<UrlShortenerService>();
 builder.Services.AddScoped<OrchestrationService>();
 
+builder.Services.AddAuthentication(ApiKeyAuthenticationOptions.SchemeName)
+    .AddScheme<ApiKeyAuthenticationOptions, ApiKeyAuthenticationHandler>(ApiKeyAuthenticationOptions.SchemeName, _ => { });
+builder.Services.AddAuthorization(options =>
+    options.AddPolicy(ApiKeyAuthenticationOptions.PolicyName, policy => policy.RequireAuthenticatedUser()));
+
 builder.Services.AddRateLimiter(options =>
 {
     options.OnRejected = (context, cancellationToken) =>
@@ -140,6 +145,7 @@ app.UseHttpsRedirection();
 
 app.UseRateLimiter();
 
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();

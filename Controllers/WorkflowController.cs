@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using UrlShortener.Application;
 
@@ -5,6 +6,7 @@ namespace UrlShortener.Controllers;
 
 [ApiController]
 [Route("api/workflows")]
+[Authorize(Policy = ApiKeyAuthenticationOptions.PolicyName)]
 public sealed class WorkflowController(OrchestrationService orchestration, IWorkflowStateStore stateStore) : ControllerBase
 {
     /// <summary>Executes the governed SDLC workflow for a requirement.</summary>

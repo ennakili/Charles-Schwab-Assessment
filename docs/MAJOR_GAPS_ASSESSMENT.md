@@ -53,6 +53,7 @@ The test suite now covers URL validation, expiry, click analytics, full host-lev
 - Runnable .NET 10 URL shortener API.
 - Explicit dependency graph with computed ready-node scheduling.
 - Entry and exit gates for every workflow node.
+- API key authentication and authorization on all `/api/workflows/*` control endpoints (including approvals), failing closed with `401` when no key is configured; the public URL-shortener endpoints remain unauthenticated by design.
 - Human approval checkpoint gating the release-readiness stage before it pushes a branch or opens a pull request, with persisted approve/reject decisions, `awaiting-approval`/`rejected` workflow states, audit events, and re-approval required after re-planning.
 - URL validation for absolute HTTP and HTTPS destinations.
 - Expiration handling.

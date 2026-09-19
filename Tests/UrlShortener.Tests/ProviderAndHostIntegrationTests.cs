@@ -48,6 +48,37 @@ public sealed class ProviderAndHostIntegrationTests
     }
 
     [Fact]
+    public async Task WorkflowControlEndpointsRequireApiKey()
+    {
+        using var factory = new UrlShortenerWebApplicationFactory(workflowApiKey: "test-workflow-key");
+
+        using var missingKeyClient = factory.CreateClient();
+        using var missingKeyResponse = await missingKeyClient.GetAsync("/api/workflows/audit");
+        Assert.Equal(HttpStatusCode.Unauthorized, missingKeyResponse.StatusCode);
+
+        using var wrongKeyClient = factory.CreateClient();
+        wrongKeyClient.DefaultRequestHeaders.Add("X-Api-Key", "wrong-key");
+        using var wrongKeyResponse = await wrongKeyClient.GetAsync("/api/workflows/audit");
+        Assert.Equal(HttpStatusCode.Unauthorized, wrongKeyResponse.StatusCode);
+
+        using var validKeyClient = factory.CreateClient();
+        validKeyClient.DefaultRequestHeaders.Add("X-Api-Key", "test-workflow-key");
+        using var validKeyResponse = await validKeyClient.GetAsync("/api/workflows/audit");
+        Assert.Equal(HttpStatusCode.OK, validKeyResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task WorkflowControlEndpointsAreDisabledWhenNoApiKeyIsConfigured()
+    {
+        using var factory = new UrlShortenerWebApplicationFactory(workflowApiKey: "");
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/api/workflows/audit");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task DeployedRedisLeaseContractWorksWhenEnabled()
     {
         if (!string.Equals(Environment.GetEnvironmentVariable("RUN_DEPLOYED_PROVIDER_CONTRACTS"), "true", StringComparison.OrdinalIgnoreCase))
@@ -83,7 +114,7 @@ public sealed class ProviderAndHostIntegrationTests
         Assert.Equal(repository.Split('/')[1], payload.GetProperty("name").GetString());
     }
 
-    private sealed class UrlShortenerWebApplicationFactory(int? rateLimitPermitLimit = null) : WebApplicationFactory<Program>
+    private sealed class UrlShortenerWebApplicationFactory(int? rateLimitPermitLimit = null, string? workflowApiKey = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
         {
@@ -92,6 +123,8 @@ public sealed class ProviderAndHostIntegrationTests
             builder.UseSetting("Workflow:SourceRoot", Path.GetTempPath());
             if (rateLimitPermitLimit is not null)
                 builder.UseSetting("RateLimiting:ShortUrlCreate:PermitLimit", rateLimitPermitLimit.Value.ToString());
+            if (workflowApiKey is not null)
+                builder.UseSetting("Workflow:ApiKey", workflowApiKey);
         }
     }
 }

@@ -2,13 +2,17 @@
 
 A runnable .NET 10 Web API prototype that shortens URLs, records click analytics, and exposes a governed agentic SDLC workflow. The application is organized around the workflow graph and its durable execution state; URL persistence and caching are implementation details behind the workflow service. SQLite uses the host system library rather than a bundled native binary.
 
-## Run
+## Setup
+
+Prerequisites: .NET 10 SDK, and a host `libsqlite3.so.0` (or platform equivalent) available for `SQLitePCLRaw.provider.sqlite3` to bind to.
 
 ```bash
+git clone https://github.com/ennakili/Charles-Schwab-Assessment.git
+cd Charles-Schwab-Assessment/UrlShortener
 dotnet run
 ```
 
-The development OpenAPI document is available at `/openapi/v1.json`. The default launch profile also enables HTTPS.
+The database schema is created automatically on first run via `EnsureCreatedAsync`; no separate migration step is required. The development OpenAPI document is available at `/openapi/v1.json`. The default launch profile also enables HTTPS.
 
 ## API
 
@@ -33,6 +37,8 @@ Content-Type: application/json
 ```
 
 Supply `workflowId` to resume an existing workflow from its SQLite checkpoints. PR review and merge policy remain outside this runtime API. Audit events are available at `GET /api/workflows/audit`.
+
+All `/api/workflows/*` endpoints require an `X-Api-Key` header matching `Workflow:ApiKey` (set `Workflow__ApiKey` in production). If no key is configured, these endpoints fail closed with `401 Unauthorized` rather than allowing unauthenticated access. The public URL-shortener endpoints (`/api/short-urls`, `/r/{code}`) remain unauthenticated by design. A local development key (`dev-local-workflow-key`) is preset in `appsettings.Development.json` for convenience; do not reuse it outside local development.
 
 The `release-readiness` stage is a high-impact action gate: it pushes a branch and opens a GitHub pull request as an external side effect. It will not execute until a human records an approval decision:
 
@@ -115,7 +121,8 @@ Requirement: `Make links fast and reliable.` The requirements stage preserves th
 - Audit events include workflow, stage, action, outcome, detail, and correlation ID.
 - Metrics expose success rate, retry count, rollback count, end-to-end latency, and recovery latency.
 - No arbitrary code execution, secrets, network fetching, or destructive deployment action is performed by the prototype.
-- Remaining hardening: point `Telemetry:OtlpEndpoint` at a real collector, tune per-environment rate limits under production load, and add authentication for workflow control endpoints.
+- Workflow control endpoints (`/api/workflows/*`, including approvals) require an `X-Api-Key` header validated in constant time against `Workflow:ApiKey`; requests fail closed with `401` when no key is configured.
+- Remaining hardening: point `Telemetry:OtlpEndpoint` at a real collector, tune per-environment rate limits under production load, and move from a shared API key to per-user credentials with role-based approval authority.
 
 ## Testing
 
@@ -133,8 +140,8 @@ dotnet test Tests/UrlShortener.Tests/UrlShortener.Tests.csproj --filter Deployed
 
 The test exercises the same execute and compensate HTTP contract used by the workflow handler. It is skipped unless explicitly enabled.
 
-The tests target application behavior rather than controller implementation: URL validation, expiry, click analytics, durable checkpoints, bounded retry, re-planning, and audit traceability. HTTP contract tests should be added before production release.
+The tests target application behavior rather than controller implementation: URL validation, expiry, click analytics, durable checkpoints, bounded retry, re-planning, and audit traceability. Host-level HTTP contract tests (`ProviderAndHostIntegrationTests`) exercise the full ASP.NET Core pipeline for short URL creation, redirect, analytics, and rate limiting.
 
 ## Trade-offs and limitations
 
-SQLite keeps setup friction low while providing durable local persistence. The application uses `SQLitePCLRaw.provider.sqlite3` with the host system library, avoiding a bundled native SQLite dependency. HybridCache reduces repeated mapping reads but requires a distributed cache configuration for multi-instance deployments. Short-code generation is deterministic per process and is not a distributed uniqueness strategy. The workflow models agent outputs and governance decisions without invoking an external LLM; an actual agent integration should remain behind a policy-enforced adapter and should never bypass policy or PR change-control gates.
+SQLite keeps setup friction low while providing durable local persistence. The application uses `SQLitePCLRaw.provider.sqlite3` with the host system library, avoiding a bundled native SQLite dependency. HybridCache reduces repeated mapping reads but requires a distributed cache configuration for multi-instance deployments. Short codes are generated randomly and checked for collisions before insert with bounded retry, which is safe for multi-instance deployment but adds a small amount of latency under high collision rates; a production deployment at very large scale may prefer a coordinated allocator (e.g. Snowflake-style IDs) instead. The workflow models agent outputs and governance decisions without invoking an external LLM; an actual agent integration should remain behind a policy-enforced adapter and should never bypass policy or PR change-control gates.
