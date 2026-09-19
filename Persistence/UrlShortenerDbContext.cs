@@ -10,6 +10,8 @@ public sealed class UrlShortenerDbContext(DbContextOptions<UrlShortenerDbContext
     public DbSet<WorkflowEntity> Workflows => Set<WorkflowEntity>();
     public DbSet<WorkflowStageEntity> WorkflowStages => Set<WorkflowStageEntity>();
     public DbSet<WorkflowArtifactEntity> WorkflowArtifacts => Set<WorkflowArtifactEntity>();
+    public DbSet<WorkflowGateEvidenceEntity> WorkflowGateEvidence => Set<WorkflowGateEvidenceEntity>();
+    public DbSet<WorkflowLeaseEntity> WorkflowLeases => Set<WorkflowLeaseEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -44,6 +46,8 @@ public sealed class UrlShortenerDbContext(DbContextOptions<UrlShortenerDbContext
             entity.Property(item => item.Scenario).IsRequired();
             entity.Property(item => item.CorrelationId).IsRequired();
             entity.Property(item => item.Status).IsRequired();
+            entity.Property(item => item.RequirementRevision).IsRequired();
+            entity.HasIndex(item => item.IdempotencyKey).IsUnique();
             entity.HasMany(item => item.Stages).WithOne().HasForeignKey(item => item.WorkflowId);
         });
 
@@ -60,6 +64,19 @@ public sealed class UrlShortenerDbContext(DbContextOptions<UrlShortenerDbContext
             entity.Property(item => item.Kind).IsRequired();
             entity.Property(item => item.Content).IsRequired();
             entity.Property(item => item.Validation).IsRequired();
+        });
+
+        modelBuilder.Entity<WorkflowGateEvidenceEntity>(entity =>
+        {
+            entity.HasKey(item => new { item.WorkflowId, item.Stage, item.Gate });
+            entity.Property(item => item.Detail).IsRequired();
+        });
+
+        modelBuilder.Entity<WorkflowLeaseEntity>(entity =>
+        {
+            entity.HasKey(item => item.WorkflowId);
+            entity.Property(item => item.OwnerId).IsRequired();
+            entity.Property(item => item.ExpiresAt).IsRequired();
         });
     }
 }
@@ -102,6 +119,13 @@ public sealed class WorkflowEntity
     public required string Scenario { get; set; }
     public required string CorrelationId { get; set; }
     public required string Status { get; set; }
+    public string? IdempotencyKey { get; set; }
+    public required string RequirementRevision { get; set; }
+    public int RetryCount { get; set; }
+    public int RollbackCount { get; set; }
+    public long EndToEndLatencyMs { get; set; }
+    public long MeanTimeToRecoveryMs { get; set; }
+    public DateTimeOffset MetricsCapturedAt { get; set; }
     public List<WorkflowStageEntity> Stages { get; set; } = [];
 }
 
@@ -114,6 +138,11 @@ public sealed class WorkflowStageEntity
     public required string Detail { get; set; }
     public DateTimeOffset StartedAt { get; set; }
     public DateTimeOffset CompletedAt { get; set; }
+    public string? FailureClass { get; set; }
+    public string? FailureMessage { get; set; }
+    public bool FailureRetryable { get; set; }
+    public bool CompensationRequired { get; set; }
+    public string? CompensationStatus { get; set; }
 }
 
 public sealed class WorkflowArtifactEntity
@@ -124,4 +153,21 @@ public sealed class WorkflowArtifactEntity
     public required string Content { get; set; }
     public required string Validation { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+}
+
+public sealed class WorkflowGateEvidenceEntity
+{
+    public required string WorkflowId { get; set; }
+    public required string Stage { get; set; }
+    public required string Gate { get; set; }
+    public bool Passed { get; set; }
+    public required string Detail { get; set; }
+    public DateTimeOffset EvaluatedAt { get; set; }
+}
+
+public sealed class WorkflowLeaseEntity
+{
+    public required string WorkflowId { get; set; }
+    public required string OwnerId { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
 }

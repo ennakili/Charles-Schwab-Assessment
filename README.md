@@ -59,7 +59,7 @@ with a parallel-ready documentation branch:
 
 `requirements + architecture -> documentation -> release-readiness`
 
-The scheduler computes ready nodes from completed dependencies rather than relying on declaration order. Every ready wave runs as isolated concurrent workers; shared SQLite checkpoint and audit writes are serialized by the coordinator. Every node has an entry gate, a pluggable `IWorkflowStageHandler`, structured JSON artifact, validation result, and exit gate. The implementation handler applies its generated change-set manifest atomically under `Workflow:SourceRoot` and records the applied path. The tests node executes `dotnet test` and records the command, exit code, duration, output, and pass/fail result. Release readiness hashes every artifact and persists an evidence bundle that can be reviewed independently. Agent/tool-backed handlers can replace the built-in handlers for individual stages without changing graph scheduling or artifact contracts. A failed gate stops the workflow safely; a transient test failure retries once, and a failed node records rollback status. Workflow records, stage checkpoints, and artifacts are persisted in SQLite, allowing execution to resume after a process restart. A requirement containing `change` triggers downstream re-planning; a requirement containing `flaky` exercises one bounded retry. PR review and merge policy are external change-control concerns.
+The scheduler computes ready nodes from completed dependencies rather than relying on declaration order. Every ready wave runs as isolated concurrent workers; shared SQLite checkpoint and audit writes are serialized by the coordinator. Every node has an entry gate, a pluggable `IWorkflowStageHandler`, structured JSON artifact, validation result, and exit gate. Entry and exit gate decisions are persisted as first-class evidence alongside stage artifacts. The implementation handler creates a separate Git worktree and branch named `workflow/{workflowId}`, applies its generated change-set manifest there, commits it, and records the branch/path. Release readiness pushes that branch to `origin`, creates a GitHub pull request containing the requirement, executed test output, artifact hashes, and review instructions, applies configured labels, requests configured users or teams, validates configured required checks against branch protection, and can enqueue the PR in a GitHub merge queue. `appsettings.Development.json` and `appsettings.Production.json` provide environment-specific policy profiles. Set `GITHUB_TOKEN` before executing the workflow; override production reviewers, teams, checks, labels, and merge-queue settings with environment variables such as `Workflow__Reviewers__0`, `Workflow__TeamReviewers__0`, `Workflow__RequiredChecks__0`, and `Workflow__EnableMergeQueue`. Agent/tool-backed handlers can replace the built-in handlers for individual stages without changing graph scheduling or artifact contracts. A failed gate stops the workflow safely; a transient test failure retries once, and a failed node records rollback status. Workflow records, stage checkpoints, artifacts, and gate evidence are persisted in SQLite, allowing execution to resume after a process restart. A requirement containing `change` triggers downstream re-planning; a requirement containing `flaky` exercises one bounded retry. PR review and merge policy are external change-control concerns.
 
 ## Required scenarios
 
@@ -89,6 +89,16 @@ Requirement: `Make links fast and reliable.` The requirements stage preserves th
 ```bash
 dotnet test Tests/UrlShortener.Tests/UrlShortener.Tests.csproj
 ```
+
+To run the deployed agent-provider contract test against a real environment:
+
+```bash
+RUN_DEPLOYED_PROVIDER_CONTRACTS=true \
+AGENT_PROVIDER_BASE_URL=https://agent-provider.example.com \
+dotnet test Tests/UrlShortener.Tests/UrlShortener.Tests.csproj --filter DeployedProviderContractTests
+```
+
+The test exercises the same execute and compensate HTTP contract used by the workflow handler. It is skipped unless explicitly enabled.
 
 The tests target application behavior rather than controller implementation: URL validation, expiry, click analytics, durable checkpoints, bounded retry, re-planning, and audit traceability. HTTP contract tests should be added before production release.
 

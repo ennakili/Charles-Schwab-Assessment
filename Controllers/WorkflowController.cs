@@ -5,7 +5,7 @@ namespace UrlShortener.Controllers;
 
 [ApiController]
 [Route("api/workflows")]
-public sealed class WorkflowController(OrchestrationService orchestration) : ControllerBase
+public sealed class WorkflowController(OrchestrationService orchestration, IWorkflowStateStore stateStore) : ControllerBase
 {
     /// <summary>Executes the governed SDLC workflow for a requirement.</summary>
     [HttpPost("execute")]
@@ -19,4 +19,9 @@ public sealed class WorkflowController(OrchestrationService orchestration) : Con
     /// <summary>Returns the append-only workflow audit trail for operational review.</summary>
     [HttpGet("audit")]
     public ActionResult<IReadOnlyList<AuditEvent>> Audit() => Ok(orchestration.ReadAudit());
+
+    /// <summary>Returns persisted entry and exit gate evidence for operational review.</summary>
+    [HttpGet("{workflowId}/gates")]
+    public async Task<ActionResult<IReadOnlyList<WorkflowGateEvidence>>> Gates(string workflowId, CancellationToken cancellationToken) =>
+        Ok(await stateStore.GetGateEvidenceAsync(workflowId, cancellationToken));
 }

@@ -46,7 +46,8 @@ public sealed record WorkflowRequest(
     string Requirement,
     string Scenario,
     string? CorrelationId = null,
-    string? WorkflowId = null);
+    string? WorkflowId = null,
+    string? IdempotencyKey = null);
 
 public sealed record WorkflowState(
     string WorkflowId,
@@ -54,7 +55,10 @@ public sealed record WorkflowState(
     string Scenario,
     string CorrelationId,
     string Status,
-    IReadOnlyList<WorkflowStageResult> Stages);
+    IReadOnlyList<WorkflowStageResult> Stages,
+    WorkflowMetrics Metrics,
+    string? IdempotencyKey,
+    string RequirementRevision);
 
 public sealed record WorkflowArtifact(
     string WorkflowId,
@@ -63,6 +67,45 @@ public sealed record WorkflowArtifact(
     string Content,
     string Validation,
     DateTimeOffset CreatedAt);
+
+public sealed record WorkflowGateEvidence(
+    string WorkflowId,
+    string Stage,
+    string Gate,
+    bool Passed,
+    string Detail,
+    DateTimeOffset EvaluatedAt);
+
+public enum WorkflowFailureClass
+{
+    Transient,
+    Permanent,
+    ExternalSideEffect,
+    Cancelled,
+    Unknown
+}
+
+public sealed record WorkflowFailure(
+    WorkflowFailureClass Classification,
+    string Message,
+    bool Retryable,
+    bool CompensationRequired);
+
+public sealed record WorkflowMetricsSnapshot(
+    int RetryCount,
+    int RollbackCount,
+    long EndToEndLatencyMs,
+    long MeanTimeToRecoveryMs,
+    DateTimeOffset CapturedAt);
+
+public sealed record WorkflowLease(string WorkflowId, string OwnerId, DateTimeOffset ExpiresAt);
+
+public interface IWorkflowExecutionLock
+{
+    Task<WorkflowLease> AcquireAsync(string workflowId, TimeSpan duration, CancellationToken cancellationToken);
+    Task RenewAsync(WorkflowLease lease, TimeSpan duration, CancellationToken cancellationToken);
+    Task ReleaseAsync(WorkflowLease lease, CancellationToken cancellationToken);
+}
 
 public sealed record TestExecutionEvidence(
     string Command,
@@ -82,6 +125,12 @@ public sealed record ImplementationFileChange(string Path, string Operation, str
 public interface IWorkflowChangeApplier
 {
     Task<IReadOnlyList<string>> ApplyAsync(string workflowId, IReadOnlyList<ImplementationFileChange> changes, CancellationToken cancellationToken);
+    Task RollbackAsync(string workflowId, CancellationToken cancellationToken);
+}
+
+public interface IWorkflowPullRequestPublisher
+{
+    Task<string> PublishAsync(string workflowId, WorkflowRequest request, IReadOnlyDictionary<string, WorkflowArtifact> artifacts, CancellationToken cancellationToken);
 }
 
 public interface IWorkflowStateStore
@@ -92,6 +141,14 @@ public interface IWorkflowStateStore
     Task SetStatusAsync(string workflowId, string status, CancellationToken cancellationToken);
     Task SaveArtifactAsync(WorkflowArtifact artifact, CancellationToken cancellationToken);
     Task<IReadOnlyList<WorkflowArtifact>> GetArtifactsAsync(string workflowId, CancellationToken cancellationToken);
+    Task SaveGateEvidenceAsync(WorkflowGateEvidence evidence, CancellationToken cancellationToken);
+    Task<IReadOnlyList<WorkflowGateEvidence>> GetGateEvidenceAsync(string workflowId, CancellationToken cancellationToken);
+    Task SaveMetricsAsync(string workflowId, WorkflowMetricsSnapshot metrics, CancellationToken cancellationToken);
+    Task<WorkflowLease> AcquireLeaseAsync(string workflowId, TimeSpan duration, CancellationToken cancellationToken);
+    Task RenewLeaseAsync(WorkflowLease lease, TimeSpan duration, CancellationToken cancellationToken);
+    Task ReleaseLeaseAsync(WorkflowLease lease, CancellationToken cancellationToken);
+    Task ReconcileInterruptedAsync(string workflowId, CancellationToken cancellationToken);
+    Task ReplanAsync(string workflowId, string requirement, string scenario, string requirementRevision, IReadOnlyList<string> impactedStages, CancellationToken cancellationToken);
 }
 
 public sealed record WorkflowResult(
@@ -109,7 +166,9 @@ public sealed record WorkflowStageResult(
     int Attempts,
     string Detail,
     DateTimeOffset StartedAt,
-    DateTimeOffset CompletedAt);
+    DateTimeOffset CompletedAt,
+    WorkflowFailure? Failure = null,
+    string? CompensationStatus = null);
 
 public sealed record WorkflowMetrics(
     double SuccessRate,

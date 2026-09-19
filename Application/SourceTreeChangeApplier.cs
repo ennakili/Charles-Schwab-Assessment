@@ -16,6 +16,18 @@ public sealed class SourceTreeChangeApplier(string sourceRoot) : IWorkflowChange
         return [relativePath.Replace(Path.DirectorySeparatorChar, '/')];
     }
 
+    public Task RollbackAsync(string workflowId, CancellationToken cancellationToken)
+    {
+        var safeId = new string(workflowId.Where(char.IsLetterOrDigit).ToArray());
+        var generated = ResolveSafePath(Path.Combine("GeneratedWorkflowChanges", safeId));
+        if (Directory.Exists(generated))
+            Directory.Delete(generated, true);
+        var parent = Path.GetDirectoryName(generated)!;
+        if (Directory.Exists(parent) && !Directory.EnumerateFileSystemEntries(parent).Any())
+            Directory.Delete(parent);
+        return Task.CompletedTask;
+    }
+
     private string ResolveSafePath(string relativePath)
     {
         if (Path.IsPathRooted(relativePath) || relativePath.Contains("..", StringComparison.Ordinal))

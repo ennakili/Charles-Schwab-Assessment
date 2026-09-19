@@ -4,10 +4,18 @@ using UrlShortener.Persistence;
 using Microsoft.EntityFrameworkCore;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using StackExchange.Redis;
 
-NativeLibrary.SetDllImportResolver(
-    typeof(SQLitePCL.SQLite3Provider_sqlite3).Assembly,
-    static (libraryName, _, _) => libraryName == "sqlite3" ? NativeLibrary.Load("libsqlite3.so.0") : IntPtr.Zero);
+try
+{
+    NativeLibrary.SetDllImportResolver(
+        typeof(SQLitePCL.SQLite3Provider_sqlite3).Assembly,
+        static (libraryName, _, _) => libraryName == "sqlite3" ? NativeLibrary.Load("libsqlite3.so.0") : IntPtr.Zero);
+}
+catch (InvalidOperationException)
+{
+    // The resolver is process-wide and may already be configured by an integration-test host.
+}
 SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_sqlite3());
 
 var builder = WebApplication.CreateBuilder(args);
@@ -30,8 +38,18 @@ builder.Services.AddScoped<IClickEventRepository, SqliteClickEventRepository>();
 builder.Services.AddSingleton<IShortCodeGenerator, DeterministicShortCodeGenerator>();
 builder.Services.AddScoped<IAuditSink, SqliteAuditSink>();
 builder.Services.AddScoped<IWorkflowStateStore, SqliteWorkflowStateStore>();
+var redisConnection = builder.Configuration["Workflow:RedisConnection"];
+if (string.IsNullOrWhiteSpace(redisConnection))
+    builder.Services.AddScoped<IWorkflowExecutionLock, SqliteWorkflowExecutionLock>();
+else
+    builder.Services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(redisConnection));
+if (!string.IsNullOrWhiteSpace(redisConnection))
+    builder.Services.AddScoped<IWorkflowExecutionLock, RedisWorkflowExecutionLock>();
 builder.Services.AddScoped<IWorkflowTestRunner, DotnetTestRunner>();
-builder.Services.AddScoped<IWorkflowChangeApplier>(_ => new SourceTreeChangeApplier(builder.Configuration["Workflow:SourceRoot"] ?? Directory.GetCurrentDirectory()));
+builder.Services.AddScoped<IWorkflowImpactAnalyzer, SemanticWorkflowImpactAnalyzer>();
+builder.Services.AddScoped<IWorkflowChangeApplier>(_ => new GitWorktreeChangeApplier(builder.Configuration["Workflow:SourceRoot"] ?? Directory.GetCurrentDirectory()));
+builder.Services.AddHttpClient("github", client => client.BaseAddress = new Uri("https://api.github.com/"));
+builder.Services.AddScoped<IWorkflowPullRequestPublisher, GitHubPullRequestPublisher>();
 builder.Services.AddScoped<IWorkflowStageHandler, BuiltInWorkflowStageHandler>();
 builder.Services.AddScoped<UrlShortenerService>();
 builder.Services.AddScoped<OrchestrationService>();
@@ -71,3 +89,5 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+public partial class Program;
