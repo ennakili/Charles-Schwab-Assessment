@@ -125,12 +125,22 @@ using (var scope = app.Services.CreateScope())
 app.UseExceptionHandler(exceptionApp => exceptionApp.Run(async context =>
 {
     var exception = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error;
+    var isValidationError = exception is UrlShortenerException;
+    if (!isValidationError && exception is not null)
+        context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("UnhandledException")
+            .LogError(exception, "Unhandled exception processing {Method} {Path} (trace {TraceId})", context.Request.Method, context.Request.Path, context.TraceIdentifier);
+
     context.Response.ContentType = "application/problem+json";
-    context.Response.StatusCode = exception is UrlShortenerException ? StatusCodes.Status400BadRequest : StatusCodes.Status500InternalServerError;
+    context.Response.StatusCode = isValidationError ? StatusCodes.Status400BadRequest : StatusCodes.Status500InternalServerError;
+    // Unexpected-error details are never returned to clients outside Development to avoid leaking internals; the trace ID correlates with server logs.
+    var detail = isValidationError || app.Environment.IsDevelopment()
+        ? exception?.Message
+        : $"An unexpected error occurred. Reference trace ID {context.TraceIdentifier} in server logs for details.";
     await Results.Problem(
         statusCode: context.Response.StatusCode,
-        title: exception is UrlShortenerException ? "Request validation failed" : "Unexpected server error",
-        detail: exception?.Message).ExecuteAsync(context);
+        title: isValidationError ? "Request validation failed" : "Unexpected server error",
+        detail: detail,
+        extensions: new Dictionary<string, object?> { ["traceId"] = context.TraceIdentifier }).ExecuteAsync(context);
 }));
 
 // Configure the HTTP request pipeline.

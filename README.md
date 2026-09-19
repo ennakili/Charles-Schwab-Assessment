@@ -122,6 +122,7 @@ Requirement: `Make links fast and reliable.` The requirements stage preserves th
 - Metrics expose success rate, retry count, rollback count, end-to-end latency, and recovery latency.
 - No arbitrary code execution, secrets, network fetching, or destructive deployment action is performed by the prototype.
 - Workflow control endpoints (`/api/workflows/*`, including approvals) require an `X-Api-Key` header validated in constant time against `Workflow:ApiKey`; requests fail closed with `401` when no key is configured.
+- Unexpected (non-validation) errors return a generic `500` with a `traceId` for log correlation outside Development; internal exception details are logged server-side but never returned to clients, avoiding information disclosure. Validation errors (`UrlShortenerException`) still return their specific detail message.
 - Remaining hardening: point `Telemetry:OtlpEndpoint` at a real collector, tune per-environment rate limits under production load, and move from a shared API key to per-user credentials with role-based approval authority.
 
 ## Testing

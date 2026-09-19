@@ -48,6 +48,20 @@ public sealed class ProviderAndHostIntegrationTests
     }
 
     [Fact]
+    public async Task ValidationErrorsSurfaceDetailAndTraceIdWithoutLeakingInternals()
+    {
+        using var factory = new UrlShortenerWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsJsonAsync("/api/short-urls", new { destination = "javascript:alert(1)" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Contains("HTTP or HTTPS", problem.GetProperty("detail").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(problem.GetProperty("traceId").GetString()));
+    }
+
+    [Fact]
     public async Task WorkflowControlEndpointsRequireApiKey()
     {
         using var factory = new UrlShortenerWebApplicationFactory(workflowApiKey: "test-workflow-key");
